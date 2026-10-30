@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    // Entregas: só o dono lê e escreve
+    match /stops/{id} {
+      allow read, delete: if signedIn() && resource.data.owner == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.owner == request.auth.uid;
+      allow update: if signedIn() && resource.data.owner == request.auth.uid
+                    && request.resource.data.owner == request.auth.uid;
+    }
+
+    // Link do cliente: quem tem o código lê só esse documento (nome próprio + morada)
+    // e só pode alterar os campos da resposta, com coordenadas em Portugal.
+    match /confirm/{token} {
+      allow get: if true;
+      allow list: if signedIn() && resource.data.owner == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.owner == request.auth.uid && token.size() >= 20;
+      allow delete: if signedIn() && resource.data.owner == request.auth.uid;
+      allow update: if (signedIn() && resource.data.owner == request.auth.uid
+                        && request.resource.data.owner == resource.data.owner)
+                    || (
+                      request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['customerStatus','customerLat','customerLng','customerNote','customerAt'])
+                      && request.resource.data.customerStatus in ['ok','fixed']
+                      && request.resource.data.customerLat is number
+                      && request.resource.data.customerLng is number
+                      && request.resource.data.customerLat > 30 && request.resource.data.customerLat < 44
+                      && request.resource.data.customerLng > -32 && request.resource.data.customerLng < -5
+                      && request.resource.data.customerNote is string
+                      && request.resource.data.customerNote.size() <= 280
+                      && request.resource.data.customerAt == request.time
+                    );
+    }
+  }
+}

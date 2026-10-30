@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111110">
+<meta name="robots" content="noindex">
+<title>Confirmar entrega · Entregas do Brunico</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<style>
+body{padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+h1{font-size:clamp(2.2rem,10vw,3rem)}
+.addr{font-size:1.1rem;font-weight:600}
+.map{height:52vh;min-height:280px}
+.done h3{font:900 2rem/1 var(--display);text-transform:uppercase;margin:0}
+.hint{font:700 .78rem var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--fix)}
+</style>
+</head>
+<body>
+<header class="mast gut"><div class="in">
+  <div class="kicker"><span>Confirmação de entrega</span></div>
+  <h1>Entregas do <span>Brunico</span></h1>
+  <div class="barcode" aria-hidden="true"></div>
+</div></header>
+
+<main class="wrap gut">
+  <section class="panel" id="loading"><h2>A carregar…</h2><p class="note">Um momento.</p></section>
+
+  <section class="panel" id="bad" hidden>
+    <h2>Link inválido</h2>
+    <p class="note">Este link já não está ativo. Se precisar, responda à mensagem que recebeu.</p>
+  </section>
+
+  <section class="panel" id="form" hidden>
+    <h2 id="hello">Olá</h2>
+    <p style="margin:0">Hoje vamos entregar a sua encomenda nesta morada:</p>
+    <p class="addr" id="addr" style="margin:0"></p>
+    <p class="note">O pin no mapa mostra onde vamos parar. Se não estiver no sítio certo, arraste o pin ou toque no mapa para o mover.</p>
+    <div class="map" id="map"></div>
+    <div class="row">
+      <button id="btnHere" type="button">Estou aqui agora: usar a minha localização</button>
+    </div>
+    <div class="hint" id="moved" hidden>Pin alterado</div>
+    <label for="note">Indicações para o estafeta (opcional)</label>
+    <input type="text" id="note" maxlength="280" placeholder="Ex.: 2.º esq., portão verde, deixar na vizinha">
+    <button id="btnOk" class="primary big" type="button">Sim, está certo</button>
+    <button id="btnSave" class="primary big" type="button" hidden>Guardar esta localização</button>
+    <div class="status" id="info"></div>
+  </section>
+
+  <section class="panel done" id="thanks" hidden>
+    <h2>Obrigado</h2>
+    <h3 id="thanksTitle">Tudo certo</h3>
+    <p style="margin:0" id="thanksBody">O estafeta já recebeu a sua confirmação.</p>
+    <button id="btnAgain" type="button">Alterar outra vez</button>
+  </section>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, getDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { firebaseConfig } from "./config.js";
+
+const db = getFirestore(initializeApp(firebaseConfig));
+const $ = id => document.getElementById(id);
+const show = id => { for(const s of ["loading","bad","form","thanks"]) $(s).hidden = s!==id; };
+const tk = location.hash.slice(1);
+
+let data, marker, map, moved = false;
+async function load(){
+  if(!/^[A-Za-z0-9]{20,40}$/.test(tk)) return show("bad");
+  try{ const snap = await getDoc(doc(db,"confirm",tk)); if(!snap.exists()) return show("bad"); data = snap.data(); }
+  catch{ return show("bad"); }
+  $("hello").textContent = data.firstName ? `Olá, ${data.firstName}` : "Olá";
+  $("addr").textContent = data.address || "";
+  show("form");
+  const has = data.lat!=null;
+  const c = data.customerStatus==="fixed" ? [data.customerLat,data.customerLng] : has ? [data.lat,data.lng] : [39.7436,-8.8071];
+  map = L.map("map").setView(c, has ? 17 : 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+  marker = L.marker(c,{draggable:true,autoPan:true,icon:L.divIcon({className:"pin start",html:"●",iconSize:[28,28]})}).addTo(map);
+  marker.on("dragend",()=>setMoved());
+  map.on("click",e=>{ marker.setLatLng(e.latlng); setMoved(); });
+  if(!has){ $("info").textContent="Não conseguimos localizar a morada com exatidão. Por favor, coloque o pin no sítio certo."; setMoved(); }
+}
+function setMoved(){ moved = true; $("moved").hidden=false; $("btnOk").hidden=true; $("btnSave").hidden=false; }
+
+$("btnHere").onclick=()=>{
+  if(!navigator.geolocation){ $("info").textContent="O seu navegador não dá a localização. Arraste o pin no mapa."; return; }
+  $("info").textContent="A obter a localização…";
+  navigator.geolocation.getCurrentPosition(p=>{
+    const ll=[p.coords.latitude,p.coords.longitude]; marker.setLatLng(ll); map.setView(ll,18); setMoved();
+    $("info").textContent=`Localização obtida (precisão de ${Math.round(p.coords.accuracy)} m). Confirme e toque em Guardar.`;
+  }, ()=>{ $("info").textContent="Não foi possível obter a localização. Arraste o pin no mapa."; }, {enableHighAccuracy:true,timeout:15000});
+};
+
+async function send(status){
+  const ll = marker.getLatLng();
+  const lat = status==="fixed" ? ll.lat : (data.lat ?? ll.lat), lng = status==="fixed" ? ll.lng : (data.lng ?? ll.lng);
+  const btns=[$("btnOk"),$("btnSave")]; btns.forEach(b=>b.disabled=true); $("info").textContent="A enviar…";
+  try{
+    await updateDoc(doc(db,"confirm",tk),{customerStatus:status, customerLat:+lat.toFixed(6), customerLng:+lng.toFixed(6),
+      customerNote:$("note").value.trim().slice(0,280), customerAt:serverTimestamp()});
+    $("thanksTitle").textContent = status==="fixed" ? "Localização guardada" : "Tudo certo";
+    $("thanksBody").textContent = status==="fixed" ? "O estafeta já recebeu o sítio exato da entrega." : "O estafeta já recebeu a sua confirmação.";
+    show("thanks");
+  }catch(e){ $("info").textContent="Não foi possível enviar. Verifique a ligação à internet e tente de novo."; $("info").classList.add("err"); }
+  finally{ btns.forEach(b=>b.disabled=false); }
+}
+$("btnOk").onclick=()=>send("ok");
+$("btnSave").onclick=()=>send("fixed");
+$("btnAgain").onclick=()=>{ show("form"); map.invalidateSize(); };
+load();
+</script>
+</body>
+</html>

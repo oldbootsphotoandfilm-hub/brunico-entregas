@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111110">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Entregas do Brunico</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<style>
+.stops{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.stop{padding:12px 0;border-bottom:1px dashed var(--soft);display:grid;grid-template-columns:44px 1fr;gap:4px 12px;align-items:start}
+.stop:last-child{border-bottom:0}
+.stop.done .info{opacity:.5}
+.stop.done .addr{text-decoration:line-through}
+.num{font:900 1.6rem/1 var(--display);width:40px;height:40px;background:var(--ink);color:var(--accent);display:grid;place-items:center;font-variant-numeric:tabular-nums}
+.stop.done .num{background:transparent;color:var(--ok);border:2px solid var(--ok);font-size:1.1rem}
+.info{min-width:0}
+.name{font-weight:700;font-size:1.02rem}
+.addr{overflow-wrap:anywhere}
+.meta{font:500 .76rem var(--mono);color:var(--muted);overflow-wrap:anywhere;margin-top:2px}
+.chip{display:inline-block;font:700 .64rem var(--mono);text-transform:uppercase;letter-spacing:.08em;padding:2px 6px;border:1.5px solid currentColor;margin-left:8px;vertical-align:2px}
+.chip.sent{color:var(--signal)} .chip.ok{color:var(--ok)} .chip.fix{color:var(--fix)} .chip.warn{color:var(--bad)}
+.acts{display:flex;flex-wrap:wrap;gap:6px;grid-column:2}
+.acts button,.acts a{padding:6px 10px;font-size:.8rem;border-width:1.5px}
+.acts .del{border-color:transparent;color:var(--muted)}
+.wa{border-color:var(--ok)!important;color:var(--ok)!important}
+.empty{color:var(--muted);padding:18px 0;font-family:var(--mono);font-size:.85rem}
+#login{max-width:640px;margin:24px auto}
+/* câmara */
+#cam{position:fixed;inset:0;background:#000;z-index:900;display:flex;flex-direction:column}
+#cam video{flex:1;min-height:0;width:100%;object-fit:cover}
+#cam .frame{position:absolute;inset:18% 8% 34% 8%;border:3px solid var(--accent);pointer-events:none;transition:border-color .15s}
+#cam .frame.flash{border-color:#fff;background:rgba(255,255,255,.15)}
+#cam .bar{background:#000;color:#fff;padding:12px max(16px,env(safe-area-inset-left,0px)) calc(14px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px}
+#cam .top{position:absolute;top:calc(10px + env(safe-area-inset-top,0px));left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+#cam .top span{font:700 .8rem var(--mono);background:#000;color:var(--accent);padding:6px 10px}
+#cam .top button{background:#000;color:#fff;border-color:#fff;padding:6px 12px}
+#cam .ctrl{display:flex;gap:10px;align-items:center;justify-content:center}
+#camPlay{width:84px;height:84px;border-radius:50%;padding:0;font-size:1rem;text-transform:uppercase}
+#camPlay.on{background:var(--bad);border-color:var(--bad);color:#fff;box-shadow:none}
+#cam .status{color:#ddd;text-align:center}
+</style>
+</head>
+<body>
+
+<header class="mast gut"><div class="in">
+  <div class="kicker"><span id="today"></span><span id="countTop"></span></div>
+  <h1>Entregas do <span>Brunico</span></h1>
+  <p>Leia as etiquetas, confirme as moradas com os clientes e saia com a rota já ordenada.</p>
+  <div class="barcode" aria-hidden="true"></div>
+</div></header>
+
+<section id="login" class="panel gut" hidden>
+  <h2>Entrar</h2>
+  <p class="note">Entre com a sua conta Google. As entregas ficam guardadas na sua conta e aparecem em qualquer telemóvel onde entrar.</p>
+  <button id="btnLogin" class="primary big" type="button">Entrar com Google</button>
+  <div class="status" id="loginInfo"></div>
+</section>
+
+<main class="wrap gut" id="app" hidden>
+
+  <section class="panel">
+    <h2><b>1</b> Partida</h2>
+    <div class="row">
+      <input type="text" id="start" placeholder="Morada de onde sai">
+      <button id="btnHere" type="button">Usar a minha localização</button>
+    </div>
+    <label><input type="checkbox" id="roundtrip"> Voltar ao ponto de partida no fim</label>
+    <div class="status" id="startInfo"></div>
+  </section>
+
+  <section class="panel">
+    <h2><b>2</b> Carregar volumes</h2>
+    <button class="primary big" id="btnCam" type="button">Abrir câmara</button>
+    <p class="note">Carregue em play e vá mostrando as etiquetas uma a uma. Quando a etiqueta fica parada na moldura, a app tira a foto sozinha e ignora as repetidas.</p>
+    <div class="row">
+      <button id="btnGal" type="button">Fotos da galeria</button>
+      <input type="file" id="fileGal" accept="image/*" multiple hidden>
+    </div>
+    <div class="row">
+      <input type="text" id="manual" placeholder="Ou escreva uma morada">
+      <button id="btnManual" type="button">Adicionar</button>
+    </div>
+    <div class="status" id="status" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2><b>3</b> Confirmar moradas</h2>
+    <div class="row" role="radiogroup" aria-label="Canal">
+      <label><input type="radio" name="chan" id="chWa" value="wa"> WhatsApp</label>
+      <label><input type="radio" name="chan" id="chSms" value="sms"> SMS</label>
+    </div>
+    <label for="tpl">Mensagem. Use {nome}, {morada}, {seguimento} e {link}.</label>
+    <textarea id="tpl" rows="6"></textarea>
+    <div class="row">
+      <button id="btnNext" class="primary" type="button">Avisar próximo cliente</button>
+      <button id="btnNums" type="button">Copiar todos os números</button>
+    </div>
+    <textarea id="numsOut" rows="3" readonly hidden></textarea>
+    <div class="status" id="notifyInfo"></div>
+    <p class="note">Cada cliente recebe um link para confirmar a morada ou arrastar o pin para o sítio certo. Quando responder, aparece aqui um aviso e a rota atualiza-se sozinha.</p>
+  </section>
+
+  <section class="panel">
+    <div class="head">
+      <h2><b>4</b> <span id="stopsTitle">Rota</span></h2>
+      <div class="row">
+        <button id="btnOpt" class="primary" type="button">Otimizar rota</button>
+        <button id="btnClear" type="button">Limpar</button>
+      </div>
+    </div>
+    <div id="confirmClear" class="box" hidden>
+      <span class="note">Apagar todas as paragens? Os links enviados aos clientes deixam de funcionar.</span>
+      <div class="row"><button id="clearYes" type="button" style="color:var(--bad);border-color:var(--bad)">Sim, apagar</button><button id="clearNo" type="button">Cancelar</button></div>
+    </div>
+    <div class="status" id="routeInfo"></div>
+    <div class="map" id="map"></div>
+    <ol class="stops" id="stops"></ol>
+  </section>
+
+  <section class="panel">
+    <h2>Definições</h2>
+    <label for="apiKey">Chave da API Anthropic (fica só neste telemóvel)</label>
+    <div class="row"><input type="password" id="apiKey" autocomplete="off" placeholder="sk-ant-..."><button id="btnKey" type="button">Guardar</button></div>
+    <label for="model">Modelo de leitura</label>
+    <select id="model">
+      <option value="claude-sonnet-5-5">Mais preciso (Sonnet)</option>
+      <option value="claude-haiku-5-5">Mais barato (Haiku)</option>
+    </select>
+    <div class="status" id="keyInfo"></div>
+  </section>
+</main>
+
+<div class="dock gut" id="dock" hidden><div class="inner" id="legs"></div></div>
+
+<div id="cam" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="frame" id="camFrame"></div>
+  <div class="top"><span id="camCount">0 lidas</span><button id="camClose" type="button">Fechar</button></div>
+  <div class="bar">
+    <div class="status" id="camInfo">Carregue em play para começar a ler.</div>
+    <div class="ctrl">
+      <button id="camShot" type="button" style="color:#fff;border-color:#fff">Foto</button>
+      <button id="camPlay" class="primary" type="button">Play</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden><div class="card" role="alertdialog" aria-labelledby="mTitle">
+  <h3 id="mTitle"></h3>
+  <p id="mBody" style="margin:0"></p>
+  <div class="row"><button id="mOk" class="primary" type="button">OK</button><button id="mMap" type="button">Ver no mapa</button></div>
+</div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { firebaseConfig } from "./config.js";
+
+const fb = initializeApp(firebaseConfig);
+const auth = getAuth(fb);
+const db = getFirestore(fb);
+const $ = id => document.getElementById(id);
+const ls = {
+  get(k,d){ try{ const v=localStorage.getItem(k); return v==null?d:JSON.parse(v); }catch{ return d; } },
+  set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} }
+};
+const esc = t => String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+let uid = null;
+let stops = [];          // vindos do Firestore
+let startPt = ls.get("startPt", null);
+let unsubStops = null, unsubConfirm = null;
+
+/* ---------------- Login ---------------- */
+$("btnLogin").onclick = async () => {
+  const p = new GoogleAuthProvider();
+  try { await signInWithPopup(auth, p); }
+  catch(e){
+    if(["auth/popup-blocked","auth/operation-not-supported-in-this-environment","auth/cancelled-popup-request"].includes(e.code)) return signInWithRedirect(auth,p);
+    $("loginInfo").textContent = e.code==="auth/unauthorized-domain"
+      ? "Este endereço ainda não está autorizado no Firebase (Authentication › Definições › Domínios autorizados)."
+      : "Não foi possível entrar: " + e.code;
+    $("loginInfo").classList.add("err");
+  }
+};
+onAuthStateChanged(auth, user => {
+  unsubStops?.(); unsubConfirm?.();
+  uid = user?.uid || null;
+  $("login").hidden = !!user; $("app").hidden = !user; $("dock").hidden = !user;
+  if(!user) return;
+  $("countTop").innerHTML = `<button type="button" id="btnOut">Sair</button>`;
+  $("btnOut").onclick = () => signOut(auth);
+  unsubStops = onSnapshot(query(collection(db,"stops"), where("owner","==",uid)), snap => {
+    stops = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.order??1e9)-(b.order??1e9) || (a.created||0)-(b.created||0));
+    render();
+  }, e => setStatus("Erro a ler as entregas: "+e.code+". Confirme as regras do Firestore.", true));
+  unsubConfirm = onSnapshot(query(collection(db,"confirm"), where("owner","==",uid)), snap => {
+    for(const ch of snap.docChanges()){
+      if(ch.type==="removed") continue;
+      handleCustomer(ch.doc.id, ch.doc.data());
+    }
+  });
+});
+
+/* ---------------- Resposta do cliente ---------------- */
+let modalStop = null;
+async function handleCustomer(token, c){
+  if(!c.customerStatus || !c.customerAt) return;
+  const at = c.customerAt.toMillis ? c.customerAt.toMillis() : 0;
+  const s = stops.find(x=>x.id===c.stopId) || await waitStop(c.stopId);
+  if(!s || (s.customerSeen||0) >= at) return;
+  const upd = { customerSeen: at, status: c.customerStatus==="fixed" ? "fixed" : "ok", customerNote: c.customerNote||"" };
+  if(c.customerStatus==="fixed"){ upd.lat = c.customerLat; upd.lng = c.customerLng; upd.fixed = true; }
+  await updateDoc(doc(db,"stops",s.id), upd);
+  const nm = (s.name||"O cliente").split(" ")[0];
+  showModal(c.customerStatus==="fixed" ? "Localização corrigida" : "Morada confirmada",
+    c.customerStatus==="fixed"
+      ? `${nm} marcou no mapa o sítio certo para a entrega${c.customerNote?`: “${c.customerNote}”`:""}. A rota foi atualizada.`
+      : `${nm} confirmou que a morada está certa${c.customerNote?`: “${c.customerNote}”`:""}.`, s.id);
+  if(c.customerStatus==="fixed") setTimeout(()=>optimizeAndSave(), 400);
+  try{ navigator.vibrate?.([120,60,120]); }catch{}
+}
+async function waitStop(id){ for(let i=0;i<20;i++){ const s=stops.find(x=>x.id===id); if(s) return s; await sleep(150);} return null; }
+function showModal(t, b, stopId){
+  $("mTitle").textContent=t; $("mBody").textContent=b; modalStop=stopId; $("modal").hidden=false; $("mOk").focus();
+}
+$("mOk").onclick=()=>{ $("modal").hidden=true; };
+$("mMap").onclick=()=>{ $("modal").hidden=true; const s=stops.find(x=>x.id===modalStop); if(s?.lat!=null){ map.setView([s.lat,s.lng],16); $("map").scrollIntoView({behavior:"smooth",block:"center"}); } };
+
+/* ---------------- Utilitários ---------------- */
+function setStatus(m, err){ const s=$("status"); s.textContent=m||""; s.classList.toggle("err",!!err); }
+function fullAddr(s){ return [s.address, [s.postal, s.city].filter(Boolean).join(" ")].filter(Boolean).join(", "); }
+function token(n=24){ const a="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"; const r=crypto.getRandomValues(new Uint8Array(n)); return Array.from(r,x=>a[x%a.length]).join(""); }
+function dist(a,b){ const R=6371,t=x=>x*Math.PI/180; const dLa=t(b.lat-a.lat), dLo=t(b.lng-a.lng);
+  const h=Math.sin(dLa/2)**2+Math.cos(t(a.lat))*Math.cos(t(b.lat))*Math.sin(dLo/2)**2; return 2*R*Math.asin(Math.sqrt(h)); }
+const norm = t => String(t||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9]/g,"");
+function sameStop(a,b){
+  if(a.tracking && b.tracking && norm(a.tracking)===norm(b.tracking)) return true;
+  return norm(a.postal)===norm(b.postal) && norm(a.address).slice(0,14)===norm(b.address).slice(0,14) && (!a.name||!b.name||norm(a.name).slice(0,6)===norm(b.name).slice(0,6));
+}
+function parseLoc(t){
+  const m=String(t||"").match(/(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/);
+  if(m){ const lat=+m[1], lng=+m[2]; if(Math.abs(lat)<=90&&Math.abs(lng)<=180) return {lat,lng}; }
+  return null;
+}
+
+/* ---------------- Geocodificação (OpenStreetMap) ---------------- */
+let lastGeo = 0;
+async function nominatim(params){
+  const wait = 1100 - (Date.now()-lastGeo); if(wait>0) await sleep(wait); lastGeo = Date.now();
+  const u = new URL("https://nominatim.openstreetmap.org/search");
+  Object.entries({format:"jsonv2",limit:"1",countrycodes:"pt","accept-language":"pt",...params}).forEach(([k,v])=>u.searchParams.set(k,v));
+  try{ const r=await fetch(u); if(!r.ok) return null; const j=await r.json(); return j[0]?{lat:+j[0].lat,lng:+j[0].lon,label:j[0].display_name}:null; }catch{ return null; }
+}
+async function geocode(s){
+  let g = s.address ? await nominatim({q: fullAddr(s)}) : null;
+  if(!g && s.address && s.city) g = await nominatim({street: s.address.replace(/,.*$/,""), city: s.city});
+  if(!g && s.postal) g = await nominatim({postalcode: s.postal, country:"Portugal"});
+  if(!g && s.city) g = await nominatim({q: s.city});
+  if(g && s.lat!=null && dist(g,s) > 25) g = null;   // muito longe da estimativa: desconfiar
+  return g || (s.lat!=null ? {lat:s.lat,lng:s.lng} : null);
+}
+async function reverse(lat,lng){
+  try{ const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=pt`); const j=await r.json(); return j.display_name||""; }catch{ return ""; }
+}
+
+/* ---------------- Leitura das etiquetas (Claude) ---------------- */
+$("apiKey").value = ls.get("apiKey","") ? "••••••••••••" : "";
+$("model").value = ls.get("model","claude-sonnet-5-5");
+$("model").onchange = () => ls.set("model",$("model").value);
+$("btnKey").onclick = () => {
+  const v=$("apiKey").value.trim();
+  if(!v.startsWith("sk-ant-")){ $("keyInfo").textContent="A chave deve começar por sk-ant-."; $("keyInfo").classList.add("err"); return; }
+  ls.set("apiKey",v); $("apiKey").value="••••••••••••"; $("keyInfo").textContent="Chave guardada neste telemóvel."; $("keyInfo").classList.remove("err");
+};
+const PROMPT = `As imagens são fotos de etiquetas de envio de encomendas (CTT, DPD, GLS, SEUR, MRW, Amazon, etc.), maioritariamente em Portugal.
+Para cada etiqueta, extrai os dados do DESTINATÁRIO (não do remetente). Estima a latitude e longitude do destino pelo código postal (formato 0000-000), rua e localidade.
+Várias imagens podem mostrar a mesma etiqueta: devolve cada etiqueta só uma vez. Ignora imagens desfocadas, cortadas ou sem etiqueta. Não inventes dados que não consegues ler.
+Responde APENAS com um array JSON (pode ser vazio):
+[{"name":"","address":"Rua e número, andar","postal":"0000-000","city":"","phone":"","tracking":"","lat":0,"lng":0}]`;
+
+async function blobToB64(b){ const buf=await b.arrayBuffer(); let s=""; const u=new Uint8Array(buf); for(let i=0;i<u.length;i+=32768) s+=String.fromCharCode(...u.subarray(i,i+32768)); return btoa(s); }
+async function shrink(file){
+  const img = await createImageBitmap(file).catch(()=>null); if(!img) return file;
+  const sc=Math.min(1,1600/Math.max(img.width,img.height)); const c=document.createElement("canvas");
+  c.width=Math.round(img.width*sc); c.height=Math.round(img.height*sc); c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+  return await new Promise(r=>c.toBlob(r,"image/jpeg",.85));
+}
+async function claudeRead(blobs){
+  const key = ls.get("apiKey",""); if(!key) throw new Error("Falta a chave da API nas Definições, no fundo da página.");
+  const content = [];
+  for(const b of blobs) content.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:await blobToB64(b)}});
+  content.push({type:"text",text:PROMPT});
+  const r = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{
+    "x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:ls.get("model","claude-sonnet-5-5"),max_tokens:2000,messages:[{role:"user",content}]})});
+  if(!r.ok){
+    const j = await r.json().catch(()=>({}));
+    const msg = {401:"Chave da API inválida.",429:"Muitos pedidos seguidos. Espere um pouco.",400:(j.error?.message||"Pedido recusado."),402:"Sem saldo na conta Anthropic.",529:"Serviço sobrecarregado. Tente daqui a pouco."}[r.status] || ("Erro "+r.status+": "+(j.error?.message||""));
+    throw new Error(msg);
+  }
+  const j = await r.json();
+  const txt = (j.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("");
+  const m = txt.match(/\[[\s\S]*\]/); if(!m) return [];
+  try{ const a=JSON.parse(m[0]); return Array.isArray(a)?a:[]; }catch{ return []; }
+}
+
+async function addStops(arr){
+  let added=0, dup=0;
+  const maxOrder = stops.reduce((m,s)=>Math.max(m,s.order??0),0);
+  for(const r of arr){
+    if(!r || !(r.address||r.postal)) continue;
+    const s = {name:String(r.name||"").trim(), address:String(r.address||"").trim(), postal:String(r.postal||"").trim(),
+      city:String(r.city||"").trim(), phone:String(r.phone||"").trim(), tracking:String(r.tracking||"").trim()};
+    if(stops.some(x=>sameStop(x,s)) || pendingAdds.some(x=>sameStop(x,s))){ dup++; continue; }
+    pendingAdds.push(s);
+    const est = isFinite(+r.lat)&&isFinite(+r.lng)&&+r.lat!==0 ? {lat:+r.lat,lng:+r.lng} : {lat:null,lng:null};
+    const g = await geocode({...s, ...est});
+    const id = doc(collection(db,"stops")).id, tk = token();
+    const data = {...s, owner:uid, lat:g?.lat??null, lng:g?.lng??null, done:false, status:"new", token:tk,
+      order: maxOrder + added + 1, created: Date.now()};
+    const b = writeBatch(db);
+    b.set(doc(db,"stops",id), data);
+    b.set(doc(db,"confirm",tk), {owner:uid, stopId:id, firstName:(s.name||"").split(" ")[0], address:fullAddr(s),
+      lat:data.lat, lng:data.lng, customerStatus:null});
+    await b.commit();
+    pendingAdds = pendingAdds.filter(x=>x!==s);
+    added++;
+  }
+  if(added) optimized=false;
+  return {added,dup};
+}
+let pendingAdds = [];
+
+/* fila de imagens para ler */
+const queue = []; let reading = false, readCount = 0;
+function enqueue(blob){ queue.push(blob); pump(); }
+async function pump(){
+  if(reading) return; reading = true;
+  try{
+    while(queue.length){
+      const batch = queue.splice(0,4);
+      const msg = `A ler ${batch.length} imagem${batch.length>1?"ns":""}…${queue.length?` (${queue.length} em espera)`:""}`;
+      setStatus(msg); $("camInfo").textContent = msg;
+      try{
+        const res = await claudeRead(batch);
+        const r = await addStops(res);
+        readCount += r.added;
+        const m = r.added ? `${r.added} nova${r.added>1?"s":""} encomenda${r.added>1?"s":""}.` : (r.dup?"Etiqueta repetida, ignorada.":"Nenhuma etiqueta legível nesta imagem.");
+        setStatus(m); $("camInfo").textContent = m; $("camCount").textContent = `${readCount} lidas`;
+      }catch(e){ setStatus(e.message,true); $("camInfo").textContent=e.message; if(/chave|saldo/i.test(e.message)) { queue.length=0; break; } }
+    }
+  } finally { reading = false; }
+}
+
+$("btnGal").onclick=()=>$("fileGal").click();
+$("fileGal").onchange=async e=>{ for(const f of e.target.files) enqueue(await shrink(f)); e.target.value=""; };
+
+$("btnManual").onclick=async()=>{
+  const t=$("manual").value.trim(); if(!t) return;
+  setStatus("A localizar a morada…");
+  const g = await nominatim({q:t});
+  if(!g){ setStatus("Não encontrei esta morada. Escreva também o código postal ou a localidade.", true); return; }
+  const pm = t.match(/\d{4}-\d{3}/);
+  await addStops([{address:t.replace(/,?\s*\d{4}-\d{3}.*$/,""), postal:pm?.[0]||"", city:"", lat:g.lat, lng:g.lng}]);
+  $("manual").value=""; setStatus("Morada adicionada.");
+};
+$("manual").addEventListener("keydown",e=>{ if(e.key==="Enter") $("btnManual").click(); });
+
+/* ---------------- Câmara ao vivo ---------------- */
+let stream=null, playing=false, timer=null, prevThumb=null, lastShotThumb=null, lastShotAt=0;
+const thumbC = document.createElement("canvas"); thumbC.width=64; thumbC.height=48;
+const tctx = thumbC.getContext("2d",{willReadFrequently:true});
+function thumb(v){ tctx.drawImage(v,0,0,64,48); const d=tctx.getImageData(0,0,64,48).data; const g=new Uint8Array(64*48);
+  for(let i=0;i<g.length;i++) g[i]=(d[i*4]*3+d[i*4+1]*4+d[i*4+2])>>3; return g; }
+function diff(a,b){ if(!a||!b) return 255; let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
+async function grab(){
+  const v=$("video"); const sc=Math.min(1,1600/Math.max(v.videoWidth,v.videoHeight)); const c=document.createElement("canvas");
+  c.width=Math.round(v.videoWidth*sc); c.height=Math.round(v.videoHeight*sc); c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+  const b = await new Promise(r=>c.toBlob(r,"image/jpeg",.85));
+  $("camFrame").classList.add("flash"); setTimeout(()=>$("camFrame").classList.remove("flash"),180);
+  try{ navigator.vibrate?.(40); }catch{}
+  if(b) enqueue(b);
+}
+function tick(){
+  const v=$("video"); if(!v.videoWidth) return;
+  const t=thumb(v); const motion=diff(t,prevThumb); prevThumb=t;
+  const change=diff(t,lastShotThumb);
+  const still = motion < 5;
+  if(still && (change > 16 || (change > 9 && Date.now()-lastShotAt > 4000))){ lastShotThumb=t; lastShotAt=Date.now(); grab(); }
+}
+$("btnCam").onclick=async()=>{
+  if(!ls.get("apiKey","")){ setStatus("Primeiro guarde a chave da API nas Definições, no fundo da página.", true); $("apiKey").scrollIntoView({behavior:"smooth",block:"center"}); return; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});
+    $("video").srcObject=stream; $("cam").hidden=false; readCount=0; $("camCount").textContent="0 lidas";
+    try{ wake = await navigator.wakeLock?.request("screen"); }catch{}
+  }catch(e){ setStatus("Não consegui abrir a câmara. Autorize o acesso à câmara nas definições do navegador.", true); }
+};
+let wake=null;
+function setPlay(on){
+  playing=on; $("camPlay").textContent=on?"Pausa":"Play"; $("camPlay").classList.toggle("on",on);
+  clearInterval(timer); if(on){ prevThumb=null; timer=setInterval(tick,450); $("camInfo").textContent="A ler. Mostre uma etiqueta de cada vez e segure-a parada."; }
+  else $("camInfo").textContent = reading||queue.length ? "Em pausa. A terminar de ler as últimas…" : "Em pausa.";
+}
+$("camPlay").onclick=()=>setPlay(!playing);
+$("camShot").onclick=()=>grab();
+$("camClose").onclick=()=>{ setPlay(false); stream?.getTracks().forEach(t=>t.stop()); stream=null; $("cam").hidden=true; try{ wake?.release(); }catch{} };
+
+/* ---------------- Partida ---------------- */
+$("start").value = startPt?.text || "";
+$("roundtrip").checked = ls.get("roundtrip",false);
+$("roundtrip").onchange=()=>{ ls.set("roundtrip",$("roundtrip").checked); render(); };
+async function resolveStart(){
+  const t=$("start").value.trim(); if(!t){ startPt=null; ls.set("startPt",null); return null; }
+  if(startPt?.text===t && startPt.lat!=null) return startPt;
+  const ll=parseLoc(t); const g = ll || await nominatim({q:t});
+  startPt = g ? {text:t,lat:g.lat,lng:g.lng} : {text:t,lat:null,lng:null}; ls.set("startPt",startPt);
+  $("startInfo").textContent = g ? "" : "Não encontrei a morada de partida.";
+  return startPt.lat!=null ? startPt : null;
+}
+$("start").addEventListener("change",()=>resolveStart().then(render));
+$("btnHere").onclick=()=>{
+  if(!navigator.geolocation){ $("startInfo").textContent="Este navegador não dá a localização."; return; }
+  $("startInfo").textContent="A obter a sua localização…";
+  navigator.geolocation.getCurrentPosition(async p=>{
+    const lat=p.coords.latitude, lng=p.coords.longitude;
+    const label = await reverse(lat,lng);
+    const short = label ? label.split(",").slice(0,3).join(",").trim() : `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    $("start").value = short; startPt={text:short,lat,lng}; ls.set("startPt",startPt);
+    $("startInfo").textContent = `Localização obtida (precisão de ${Math.round(p.coords.accuracy)} m).`; render();
+  }, e=>{ $("startInfo").textContent = e.code===1 ? "Autorize a localização para este site nas definições do navegador." : "Não consegui obter a localização. Tente na rua, com GPS ligado."; },
+  {enableHighAccuracy:true,timeout:15000,maximumAge:30000});
+};
+
+/* ---------------- Otimização ---------------- */
+let optimized = false;
+function routeLen(order,start,back){ let d=0,prev=start; for(const p of order){ if(prev) d+=dist(prev,p); prev=p; } if(back&&start&&prev) d+=dist(prev,start); return d; }
+function optimize(points,start,back){
+  if(points.length<2) return points.slice();
+  let rest=points.slice(), order=[], cur=start;
+  if(!cur){ order.push(rest.shift()); cur=order[0]; }
+  while(rest.length){ let bi=0,bd=Infinity; rest.forEach((p,i)=>{const d=dist(cur,p); if(d<bd){bd=d;bi=i;}}); cur=rest.splice(bi,1)[0]; order.push(cur); }
+  let improved=true, guard=0;
+  while(improved && guard++<300){ improved=false; const base=routeLen(order,start,back);
+    for(let i=0;i<order.length-1 && !improved;i++) for(let k=i+1;k<order.length;k++){
+      const cand=order.slice(0,i).concat(order.slice(i,k+1).reverse(),order.slice(k+1));
+      if(routeLen(cand,start,back)+1e-9<base){ order=cand; improved=true; break; } } }
+  return order;
+}
+async function optimizeAndSave(){
+  const start = await resolveStart(); const back=$("roundtrip").checked;
+  const pend=stops.filter(s=>!s.done&&s.lat!=null), nol=stops.filter(s=>!s.done&&s.lat==null), done=stops.filter(s=>s.done);
+  const all=[...optimize(pend,start,back),...nol,...done];
+  const b=writeBatch(db); all.forEach((s,i)=>{ if(s.order!==i+1) b.update(doc(db,"stops",s.id),{order:i+1}); }); await b.commit();
+  optimized=true; render();
+}
+$("btnOpt").onclick=()=>optimizeAndSave();
+$("btnClear").onclick=()=>{ $("confirmClear").hidden=false; };
+$("clearNo").onclick=()=>{ $("confirmClear").hidden=true; };
+$("clearYes").onclick=async()=>{
+  $("confirmClear").hidden=true;
+  for(let i=0;i<stops.length;i+=200){ const b=writeBatch(db);
+    for(const s of stops.slice(i,i+200)){ b.delete(doc(db,"stops",s.id)); if(s.token) b.delete(doc(db,"confirm",s.token)); } await b.commit(); }
+};
+
+/* ---------------- Mensagens ---------------- */
+const DEFAULT_TPL = `Olá {nome}! Vou entregar hoje a sua encomenda {seguimento}.
+Morada: {morada}.
+Confirme aqui se está certa ou marque no mapa o sítio exato: {link}
+Obrigado!`;
+$("tpl").value = ls.get("tpl", DEFAULT_TPL);
+$("tpl").addEventListener("input",()=>ls.set("tpl",$("tpl").value));
+let chan = ls.get("chan","wa"); $(chan==="sms"?"chSms":"chWa").checked=true;
+for(const id of ["chWa","chSms"]) $(id).onchange=e=>{ chan=e.target.value; ls.set("chan",chan); render(); };
+function phoneIntl(p){ let d=String(p||"").replace(/[^\d+]/g,""); if(d.startsWith("+")) d=d.slice(1); else if(d.startsWith("00")) d=d.slice(2); else if(/^[29]\d{8}$/.test(d)) d="351"+d; return d.length>=9?d:""; }
+function custLink(s){ return new URL("c.html#"+s.token, location.href).href; }
+function msgFor(s){ return $("tpl").value.replace(/\{nome\}/g,(s.name||"").split(" ")[0]).replace(/\{morada\}/g,fullAddr(s))
+  .replace(/\{seguimento\}/g,s.tracking||"").replace(/\{link\}/g,custLink(s)).replace(/ \./g,".").replace(/ {2,}/g," "); }
+function contactLink(s){ const ph=phoneIntl(s.phone); if(!ph) return "";
+  return chan==="sms" ? `sms:+${ph}${/iPhone|iPad/.test(navigator.userAgent)?"&":"?"}body=${encodeURIComponent(msgFor(s))}` : `https://wa.me/${ph}?text=${encodeURIComponent(msgFor(s))}`; }
+async function markSent(s){ if(s.status==="new") await updateDoc(doc(db,"stops",s.id),{status:"sent"}); }
+$("btnNext").onclick=()=>{
+  const s=stops.find(x=>!x.done && x.status==="new" && phoneIntl(x.phone));
+  if(!s){ $("notifyInfo").textContent="Todos os clientes com telefone já foram avisados."; return; }
+  location.href = contactLink(s); markSent(s);
+  const left=stops.filter(x=>!x.done && x.status==="new" && phoneIntl(x.phone)).length-1;
+  $("notifyInfo").textContent=`Mensagem para ${s.name||"cliente"} aberta. Faltam ${left}.`;
+};
+$("btnNums").onclick=async()=>{
+  const nums=[...new Set(stops.filter(x=>!x.done&&phoneIntl(x.phone)).map(x=>"+"+phoneIntl(x.phone)))];
+  const o=$("numsOut"); o.value=nums.join("\n"); o.hidden=!nums.length;
+  if(!nums.length){ $("notifyInfo").textContent="Nenhuma paragem tem telefone."; return; }
+  try{ await navigator.clipboard.writeText(o.value); $("notifyInfo").textContent=`${nums.length} números copiados.`; }catch{ o.select(); }
+};
+
+/* ---------------- Mapa ---------------- */
+const map = L.map("map",{zoomControl:true}).setView([39.7436,-8.8071],11);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+let fitted = false;
+function drawMap(pend, start){
+  layer.clearLayers(); const pts=[];
+  if(start){ L.marker([start.lat,start.lng],{icon:L.divIcon({className:"pin start",html:"P"})}).addTo(layer); pts.push([start.lat,start.lng]); }
+  pend.forEach((s,i)=>{ if(s.lat==null) return;
+    L.marker([s.lat,s.lng],{icon:L.divIcon({className:"pin"+(s.fixed?" fixd":""),html:String(i+1)})}).bindPopup(`<b>${esc(s.name)}</b><br>${esc(fullAddr(s))}`).addTo(layer);
+    pts.push([s.lat,s.lng]); });
+  const line=[...pts]; if($("roundtrip").checked&&start&&pts.length>1) line.push(pts[0]);
+  if(line.length>1) L.polyline(line,{color:getComputedStyle(document.documentElement).getPropertyValue("--ink").trim()||"#111",weight:3,dashArray:optimized?null:"6 6"}).addTo(layer);
+  if(pts.length && !fitted){ map.fitBounds(pts,{padding:[30,30],maxZoom:15}); fitted=true; }
+}
+
+/* ---------------- Render ---------------- */
+function navDest(s){ return s.lat!=null && s.fixed ? `${s.lat},${s.lng}` : fullAddr(s); }
+function gDir(list,origin,dest){ const p=new URLSearchParams({api:"1",travelmode:"driving"}); if(origin) p.set("origin",origin); p.set("destination",dest); if(list.length) p.set("waypoints",list.join("|")); return "https://www.google.com/maps/dir/?"+p; }
+function renderLegs(){
+  const el=$("legs"); el.innerHTML="";
+  const pend=stops.filter(s=>!s.done).map(navDest);
+  if(!pend.length){ el.innerHTML='<p class="note">Sem entregas pendentes.</p>'; return; }
+  const origin = startPt?.lat!=null ? `${startPt.lat},${startPt.lng}` : ($("start").value.trim()||"");
+  const seq = $("roundtrip").checked && origin ? [...pend,origin] : pend;
+  const legs=[]; let o=origin, i=0;
+  while(i<seq.length){ const ch=seq.slice(i,i+10); const d=ch.pop(); legs.push({url:gDir(ch,o,d),a:i+1,b:Math.min(i+ch.length+1,pend.length)}); o=d; i+=10; }
+  legs.forEach((l,n)=>{ const a=document.createElement("a"); a.className="btn primary"; a.href=l.url; a.target="_blank"; a.rel="noopener";
+    a.textContent = legs.length>1 ? `Google Maps · parte ${n+1} (${l.a}–${l.b})` : "Abrir rota no Google Maps"; el.appendChild(a); });
+}
+function render(){
+  const pend=stops.filter(s=>!s.done);
+  $("stopsTitle").textContent=`Rota · ${pend.length} por entregar`;
+  const ol=$("stops"); ol.innerHTML="";
+  if(!stops.length) ol.innerHTML='<li class="empty">Ainda sem volumes. Abra a câmara e mostre a primeira etiqueta.</li>';
+  let n=0;
+  for(const s of stops){
+    if(!s.done) n++;
+    const chip = s.status==="fixed"?'<span class="chip fix">corrigida</span>':s.status==="ok"?'<span class="chip ok">confirmada</span>':s.status==="sent"?'<span class="chip sent">avisado</span>':"";
+    const li=document.createElement("li"); li.className="stop"+(s.done?" done":"");
+    const cl=contactLink(s);
+    li.innerHTML=`<div class="num">${s.done?"OK":String(n).padStart(2,"0")}</div>
+      <div class="info"><div class="name">${esc(s.name||"Sem nome")}${chip}${s.lat==null?'<span class="chip warn">sem local</span>':""}</div>
+      <div class="addr">${esc(fullAddr(s))}</div>
+      ${s.customerNote?`<div class="meta">Nota do cliente: ${esc(s.customerNote)}</div>`:""}
+      <div class="meta">${[s.phone&&("☎ "+esc(s.phone)),s.tracking&&esc(s.tracking)].filter(Boolean).join(" · ")}</div></div>
+      <div class="acts">
+        <a class="btn" href="https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${encodeURIComponent(navDest(s))}" target="_blank" rel="noopener">Ir</a>
+        <a class="btn" href="${s.lat!=null&&s.fixed?`https://waze.com/ul?ll=${s.lat},${s.lng}&navigate=yes`:`https://waze.com/ul?navigate=yes&q=${encodeURIComponent(fullAddr(s))}`}" target="_blank" rel="noopener">Waze</a>
+        ${cl?`<a class="btn wa" data-a="msg" href="${esc(cl)}">${chan==="sms"?"SMS":"WhatsApp"}</a>`:""}
+        <button type="button" data-a="link">Copiar link</button>
+        <button type="button" data-a="done">${s.done?"Desfazer":"Entregue"}</button>
+        <button type="button" class="del" data-a="del" aria-label="Remover">✕</button>
+      </div>`;
+    li.querySelector('[data-a=msg]')?.addEventListener("click",()=>markSent(s));
+    li.querySelector('[data-a=link]').onclick=async e=>{ try{ await navigator.clipboard.writeText(custLink(s)); e.target.textContent="Copiado"; }catch{ e.target.textContent="Erro"; } markSent(s); };
+    li.querySelector('[data-a=done]').onclick=()=>updateDoc(doc(db,"stops",s.id),{done:!s.done, order: s.done? s.order : 1e6+Date.now()%1e6});
+    li.querySelector('[data-a=del]').onclick=async()=>{ const b=writeBatch(db); b.delete(doc(db,"stops",s.id)); if(s.token) b.delete(doc(db,"confirm",s.token)); await b.commit(); };
+    ol.appendChild(li);
+  }
+  const st = startPt?.lat!=null && startPt.text===$("start").value.trim() ? startPt : null;
+  const p = pend.filter(s=>s.lat!=null);
+  const km = routeLen(p, st, $("roundtrip").checked);
+  $("routeInfo").textContent = p.length>1 ? `${optimized?"Rota otimizada":"Ordem atual"} · cerca de ${Math.round(km*1.3)} km por estrada (estimativa)` : "";
+  drawMap(pend, st); renderLegs();
+}
+
+$("today").textContent = new Date().toLocaleDateString("pt-PT",{weekday:"long",day:"numeric",month:"long"});
+</script>
+</body>
+</html>
