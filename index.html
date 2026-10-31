@@ -53,11 +53,9 @@
   <div class="barcode" aria-hidden="true"></div>
 </div></header>
 
-<section id="login" class="panel gut" hidden>
-  <h2>Entrar</h2>
-  <p class="note">Entre com a sua conta Google. As entregas ficam guardadas na sua conta e aparecem em qualquer telemóvel onde entrar.</p>
-  <button id="btnLogin" class="primary big" type="button">Entrar com Google</button>
-  <div class="status" id="loginInfo"></div>
+<section id="login" class="panel gut">
+  <h2>A abrir…</h2>
+  <div class="status" id="loginInfo">A preparar a app.</div>
 </section>
 
 <main class="wrap gut" id="app" hidden>
@@ -158,7 +156,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
@@ -178,25 +176,20 @@ let stops = [];          // vindos do Firestore
 let startPt = ls.get("startPt", null);
 let unsubStops = null, unsubConfirm = null;
 
-/* ---------------- Login ---------------- */
-$("btnLogin").onclick = async () => {
-  const p = new GoogleAuthProvider();
-  try { await signInWithPopup(auth, p); }
-  catch(e){
-    if(["auth/popup-blocked","auth/operation-not-supported-in-this-environment","auth/cancelled-popup-request"].includes(e.code)) return signInWithRedirect(auth,p);
-    $("loginInfo").textContent = e.code==="auth/unauthorized-domain"
-      ? "Este endereço ainda não está autorizado no Firebase (Authentication › Definições › Domínios autorizados)."
-      : "Não foi possível entrar: " + e.code;
+/* ---------------- Acesso sem login (sessão anónima neste telemóvel) ---------------- */
+function startAnon(){
+  signInAnonymously(auth).catch(e=>{
+    $("loginInfo").textContent = e.code==="auth/admin-restricted-operation" || e.code==="auth/operation-not-allowed"
+      ? "Falta ativar o acesso anónimo no Firebase (Authentication › Método de início de sessão › Anónimo)."
+      : "Sem ligação à internet ou erro do Firebase (" + e.code + "). Recarregue a página.";
     $("loginInfo").classList.add("err");
-  }
-};
+  });
+}
 onAuthStateChanged(auth, user => {
   unsubStops?.(); unsubConfirm?.();
   uid = user?.uid || null;
   $("login").hidden = !!user; $("app").hidden = !user; $("dock").hidden = !user;
-  if(!user) return;
-  $("countTop").innerHTML = `<button type="button" id="btnOut">Sair</button>`;
-  $("btnOut").onclick = () => signOut(auth);
+  if(!user) return startAnon();
   unsubStops = onSnapshot(query(collection(db,"stops"), where("owner","==",uid)), snap => {
     stops = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.order??1e9)-(b.order??1e9) || (a.created||0)-(b.created||0));
     render();
