@@ -12,6 +12,7 @@
   --bg:#121211; --card:#1c1c1a; --ink:#ecebe4; --muted:#9c9b92; --line:#ecebe4; --soft:#34342f;
   --signal:#ffc917; --ok:#5ccf8a; --bad:#ff8a7a; --fix:#8fb0ff; --band:#000; --band-ink:#ecebe4; color-scheme:dark}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.4;padding-bottom:calc(140px + env(safe-area-inset-bottom,0px))}
 .gut{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
