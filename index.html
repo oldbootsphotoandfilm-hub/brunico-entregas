@@ -73,7 +73,7 @@
   <section class="panel">
     <h2><b>2</b> Carregar volumes</h2>
     <button class="primary big" id="btnCam" type="button">Abrir câmara</button>
-    <p class="note">Carregue em play e vá mostrando as etiquetas uma a uma. Quando a etiqueta fica parada na moldura, a app tira a foto sozinha e ignora as repetidas.</p>
+    <p class="note">Carregue em play e vá mostrando as etiquetas uma a uma, bem perto e paradas dentro da moldura. A app tira a foto sozinha e ignora as repetidas. A leitura é feita no próprio telemóvel, sem custos: confira o nome e a morada de cada uma na lista.</p>
     <div class="row">
       <button id="btnGal" type="button">Fotos da galeria</button>
       <input type="file" id="fileGal" accept="image/*" multiple hidden>
@@ -119,17 +119,6 @@
     <ol class="stops" id="stops"></ol>
   </section>
 
-  <section class="panel">
-    <h2>Definições</h2>
-    <label for="apiKey">Chave da API Anthropic (fica só neste telemóvel)</label>
-    <div class="row"><input type="password" id="apiKey" autocomplete="off" placeholder="sk-ant-..."><button id="btnKey" type="button">Guardar</button></div>
-    <label for="model">Modelo de leitura</label>
-    <select id="model">
-      <option value="claude-sonnet-5-5">Mais preciso (Sonnet)</option>
-      <option value="claude-haiku-5-5">Mais barato (Haiku)</option>
-    </select>
-    <div class="status" id="keyInfo"></div>
-  </section>
 </main>
 
 <div class="dock gut" id="dock" hidden><div class="inner" id="legs"></div></div>
@@ -154,11 +143,13 @@
 </div></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
+import { parseLabel } from "./etiqueta.js";
 
 const fb = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
@@ -264,45 +255,36 @@ async function reverse(lat,lng){
   try{ const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=pt`); const j=await r.json(); return j.display_name||""; }catch{ return ""; }
 }
 
-/* ---------------- Leitura das etiquetas (Claude) ---------------- */
-$("apiKey").value = ls.get("apiKey","") ? "••••••••••••" : "";
-$("model").value = ls.get("model","claude-sonnet-5-5");
-$("model").onchange = () => ls.set("model",$("model").value);
-$("btnKey").onclick = () => {
-  const v=$("apiKey").value.trim();
-  if(!v.startsWith("sk-ant-")){ $("keyInfo").textContent="A chave deve começar por sk-ant-."; $("keyInfo").classList.add("err"); return; }
-  ls.set("apiKey",v); $("apiKey").value="••••••••••••"; $("keyInfo").textContent="Chave guardada neste telemóvel."; $("keyInfo").classList.remove("err");
-};
-const PROMPT = `As imagens são fotos de etiquetas de envio de encomendas (CTT, DPD, GLS, SEUR, MRW, Amazon, etc.), maioritariamente em Portugal.
-Para cada etiqueta, extrai os dados do DESTINATÁRIO (não do remetente). Estima a latitude e longitude do destino pelo código postal (formato 0000-000), rua e localidade.
-Várias imagens podem mostrar a mesma etiqueta: devolve cada etiqueta só uma vez. Ignora imagens desfocadas, cortadas ou sem etiqueta. Não inventes dados que não consegues ler.
-Responde APENAS com um array JSON (pode ser vazio):
-[{"name":"","address":"Rua e número, andar","postal":"0000-000","city":"","phone":"","tracking":"","lat":0,"lng":0}]`;
-
-async function blobToB64(b){ const buf=await b.arrayBuffer(); let s=""; const u=new Uint8Array(buf); for(let i=0;i<u.length;i+=32768) s+=String.fromCharCode(...u.subarray(i,i+32768)); return btoa(s); }
+/* ---------------- Leitura das etiquetas (no próprio telemóvel, grátis) ---------------- */
 async function shrink(file){
   const img = await createImageBitmap(file).catch(()=>null); if(!img) return file;
-  const sc=Math.min(1,1600/Math.max(img.width,img.height)); const c=document.createElement("canvas");
+  const sc=Math.min(1,2000/Math.max(img.width,img.height)); const c=document.createElement("canvas");
   c.width=Math.round(img.width*sc); c.height=Math.round(img.height*sc); c.getContext("2d").drawImage(img,0,0,c.width,c.height);
-  return await new Promise(r=>c.toBlob(r,"image/jpeg",.85));
+  return c;
 }
-async function claudeRead(blobs){
-  const key = ls.get("apiKey",""); if(!key) throw new Error("Falta a chave da API nas Definições, no fundo da página.");
-  const content = [];
-  for(const b of blobs) content.push({type:"image",source:{type:"base64",media_type:"image/jpeg",data:await blobToB64(b)}});
-  content.push({type:"text",text:PROMPT});
-  const r = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{
-    "x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:ls.get("model","claude-sonnet-5-5"),max_tokens:2000,messages:[{role:"user",content}]})});
-  if(!r.ok){
-    const j = await r.json().catch(()=>({}));
-    const msg = {401:"Chave da API inválida.",429:"Muitos pedidos seguidos. Espere um pouco.",400:(j.error?.message||"Pedido recusado."),402:"Sem saldo na conta Anthropic.",529:"Serviço sobrecarregado. Tente daqui a pouco."}[r.status] || ("Erro "+r.status+": "+(j.error?.message||""));
-    throw new Error(msg);
-  }
-  const j = await r.json();
-  const txt = (j.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("");
-  const m = txt.match(/\[[\s\S]*\]/); if(!m) return [];
-  try{ const a=JSON.parse(m[0]); return Array.isArray(a)?a:[]; }catch{ return []; }
+/* cinzento + contraste: ajuda o leitor com fotos de telemóvel */
+function enhance(src){
+  const w=src.width, h=src.height, c=document.createElement("canvas"); c.width=w; c.height=h;
+  const g=c.getContext("2d",{willReadFrequently:true}); g.drawImage(src,0,0);
+  const im=g.getImageData(0,0,w,h), d=im.data; let mn=255,mx=0;
+  for(let i=0;i<d.length;i+=4){ const v=(d[i]*3+d[i+1]*4+d[i+2])>>3; d[i]=v; if(v<mn)mn=v; if(v>mx)mx=v; }
+  const k=255/Math.max(40,mx-mn);
+  for(let i=0;i<d.length;i+=4){ const v=Math.max(0,Math.min(255,(d[i]-mn)*k)); d[i]=d[i+1]=d[i+2]=v; }
+  g.putImageData(im,0,0); return c;
+}
+let worker=null;
+async function getWorker(){
+  if(worker) return worker;
+  setStatus("A preparar o leitor de etiquetas (só demora na primeira vez)…"); $("camInfo").textContent="A preparar o leitor (só na primeira vez)…";
+  worker = await Tesseract.createWorker("por");
+  await worker.setParameters({ preserve_interword_spaces:"1" });
+  return worker;
+}
+async function readLabel(canvas){
+  const w = await getWorker();
+  const { data } = await w.recognize(enhance(canvas));
+  const r = parseLabel(data.text);
+  return r ? [r] : [];
 }
 
 async function addStops(arr){
@@ -314,7 +296,7 @@ async function addStops(arr){
       city:String(r.city||"").trim(), phone:String(r.phone||"").trim(), tracking:String(r.tracking||"").trim()};
     if(stops.some(x=>sameStop(x,s)) || pendingAdds.some(x=>sameStop(x,s))){ dup++; continue; }
     pendingAdds.push(s);
-    const est = isFinite(+r.lat)&&isFinite(+r.lng)&&+r.lat!==0 ? {lat:+r.lat,lng:+r.lng} : {lat:null,lng:null};
+    const est = r.lat!=null && isFinite(+r.lat)&&isFinite(+r.lng)&&+r.lat!==0 ? {lat:+r.lat,lng:+r.lng} : {lat:null,lng:null};
     const g = await geocode({...s, ...est});
     const id = doc(collection(db,"stops")).id, tk = token();
     const data = {...s, owner:uid, lat:g?.lat??null, lng:g?.lng??null, done:false, status:"new", token:tk,
@@ -334,21 +316,20 @@ let pendingAdds = [];
 
 /* fila de imagens para ler */
 const queue = []; let reading = false, readCount = 0;
-function enqueue(blob){ queue.push(blob); pump(); }
+function enqueue(img){ if(queue.length>=4){ $("camInfo").textContent="Mais devagar: ainda a ler as anteriores."; return; } queue.push(img); pump(); }
 async function pump(){
   if(reading) return; reading = true;
   try{
     while(queue.length){
-      const batch = queue.splice(0,4);
-      const msg = `A ler ${batch.length} imagem${batch.length>1?"ns":""}…${queue.length?` (${queue.length} em espera)`:""}`;
+      const img = queue.shift();
+      const msg = `A ler etiqueta…${queue.length?` (${queue.length} em espera)`:""}`;
       setStatus(msg); $("camInfo").textContent = msg;
       try{
-        const res = await claudeRead(batch);
-        const r = await addStops(res);
+        const r = await addStops(await readLabel(img));
         readCount += r.added;
-        const m = r.added ? `${r.added} nova${r.added>1?"s":""} encomenda${r.added>1?"s":""}.` : (r.dup?"Etiqueta repetida, ignorada.":"Nenhuma etiqueta legível nesta imagem.");
-        setStatus(m); $("camInfo").textContent = m; $("camCount").textContent = `${readCount} lidas`;
-      }catch(e){ setStatus(e.message,true); $("camInfo").textContent=e.message; if(/chave|saldo/i.test(e.message)) { queue.length=0; break; } }
+        const m = r.added ? "Encomenda adicionada. Confira o nome e a morada na lista." : (r.dup?"Etiqueta repetida, ignorada.":"Não consegui ler esta etiqueta. Aproxime mais ou use Foto.");
+        setStatus(m, !r.added && !r.dup); $("camInfo").textContent = m; $("camCount").textContent = `${readCount} lidas`;
+      }catch(e){ const m="Erro no leitor de etiquetas. Verifique a internet na primeira utilização."; setStatus(m,true); $("camInfo").textContent=m; worker=null; }
     }
   } finally { reading = false; }
 }
@@ -374,13 +355,19 @@ const tctx = thumbC.getContext("2d",{willReadFrequently:true});
 function thumb(v){ tctx.drawImage(v,0,0,64,48); const d=tctx.getImageData(0,0,64,48).data; const g=new Uint8Array(64*48);
   for(let i=0;i<g.length;i++) g[i]=(d[i*4]*3+d[i*4+1]*4+d[i*4+2])>>3; return g; }
 function diff(a,b){ if(!a||!b) return 255; let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
-async function grab(){
-  const v=$("video"); const sc=Math.min(1,1600/Math.max(v.videoWidth,v.videoHeight)); const c=document.createElement("canvas");
-  c.width=Math.round(v.videoWidth*sc); c.height=Math.round(v.videoHeight*sc); c.getContext("2d").drawImage(v,0,0,c.width,c.height);
-  const b = await new Promise(r=>c.toBlob(r,"image/jpeg",.85));
+function grab(){
+  const v=$("video"), vw=v.videoWidth, vh=v.videoHeight;
+  // recortar a zona da moldura amarela (aprox.), com folga
+  const cw=v.clientWidth||vw, ch=v.clientHeight||vh, sc=Math.max(cw/vw, ch/vh);
+  const ox=(vw*sc-cw)/2, oy=(vh*sc-ch)/2;
+  const x0=Math.max(0,(cw*0.04+ox)/sc), y0=Math.max(0,(ch*0.12+oy)/sc);
+  const x1=Math.min(vw,(cw*0.96+ox)/sc), y1=Math.min(vh,(ch*0.72+oy)/sc);
+  const w=x1-x0, h=y1-y0, k=Math.min(2,2000/Math.max(w,h));
+  const c=document.createElement("canvas"); c.width=Math.round(w*k); c.height=Math.round(h*k);
+  c.getContext("2d").drawImage(v,x0,y0,w,h,0,0,c.width,c.height);
   $("camFrame").classList.add("flash"); setTimeout(()=>$("camFrame").classList.remove("flash"),180);
   try{ navigator.vibrate?.(40); }catch{}
-  if(b) enqueue(b);
+  enqueue(c);
 }
 function tick(){
   const v=$("video"); if(!v.videoWidth) return;
@@ -390,7 +377,7 @@ function tick(){
   if(still && (change > 16 || (change > 9 && Date.now()-lastShotAt > 4000))){ lastShotThumb=t; lastShotAt=Date.now(); grab(); }
 }
 $("btnCam").onclick=async()=>{
-  if(!ls.get("apiKey","")){ setStatus("Primeiro guarde a chave da API nas Definições, no fundo da página.", true); $("apiKey").scrollIntoView({behavior:"smooth",block:"center"}); return; }
+  getWorker().catch(()=>{});
   try{
     stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});
     $("video").srcObject=stream; $("cam").hidden=false; readCount=0; $("camCount").textContent="0 lidas";
@@ -544,11 +531,36 @@ function render(){
         <a class="btn" href="https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${encodeURIComponent(navDest(s))}" target="_blank" rel="noopener">Ir</a>
         <a class="btn" href="${s.lat!=null&&s.fixed?`https://waze.com/ul?ll=${s.lat},${s.lng}&navigate=yes`:`https://waze.com/ul?navigate=yes&q=${encodeURIComponent(fullAddr(s))}`}" target="_blank" rel="noopener">Waze</a>
         ${cl?`<a class="btn wa" data-a="msg" href="${esc(cl)}">${chan==="sms"?"SMS":"WhatsApp"}</a>`:""}
+        <button type="button" data-a="edit">Editar</button>
         <button type="button" data-a="link">Copiar link</button>
         <button type="button" data-a="done">${s.done?"Desfazer":"Entregue"}</button>
         <button type="button" class="del" data-a="del" aria-label="Remover">✕</button>
+      </div>
+      <div class="box edit" hidden style="grid-column:2">
+        <label>Nome<input type="text" data-f="name" value="${esc(s.name)}"></label>
+        <label>Rua e número<input type="text" data-f="address" value="${esc(s.address)}"></label>
+        <div class="row"><label style="flex:1 1 110px">Código postal<input type="text" data-f="postal" inputmode="numeric" value="${esc(s.postal)}"></label>
+        <label style="flex:2 1 160px">Localidade<input type="text" data-f="city" value="${esc(s.city)}"></label></div>
+        <label>Telefone<input type="text" data-f="phone" inputmode="tel" value="${esc(s.phone)}"></label>
+        <div class="row"><button type="button" class="primary" data-a="save">Guardar</button><button type="button" data-a="cancel">Cancelar</button></div>
+        <div class="status" data-a="emsg"></div>
       </div>`;
     li.querySelector('[data-a=msg]')?.addEventListener("click",()=>markSent(s));
+    const ed=li.querySelector(".edit");
+    li.querySelector('[data-a=edit]').onclick=()=>{ ed.hidden=!ed.hidden; };
+    li.querySelector('[data-a=cancel]').onclick=()=>{ ed.hidden=true; };
+    li.querySelector('[data-a=save]').onclick=async()=>{
+      const f={}; ed.querySelectorAll("[data-f]").forEach(i=>f[i.dataset.f]=i.value.trim());
+      const pm=f.postal.match(/(\d{4})\s*-?\s*(\d{3})/); if(pm) f.postal=`${pm[1]}-${pm[2]}`;
+      const msg=ed.querySelector('[data-a=emsg]'); msg.textContent="A localizar…";
+      const changedAddr = f.address!==s.address || f.postal!==s.postal || f.city!==s.city;
+      const g = changedAddr && !s.fixed ? await geocode({...f, lat:null, lng:null}) : null;
+      const upd={...f}; if(g){ upd.lat=g.lat; upd.lng=g.lng; }
+      if(changedAddr && !g && !s.fixed){ msg.textContent="Guardado, mas não encontrei a morada no mapa. Confira o código postal."; }
+      const b=writeBatch(db); b.update(doc(db,"stops",s.id),upd);
+      if(s.token) b.update(doc(db,"confirm",s.token),{firstName:(f.name||"").split(" ")[0], address:fullAddr(f), ...(g?{lat:g.lat,lng:g.lng}:{})});
+      await b.commit(); optimized=false;
+    };
     li.querySelector('[data-a=link]').onclick=async e=>{ try{ await navigator.clipboard.writeText(custLink(s)); e.target.textContent="Copiado"; }catch{ e.target.textContent="Erro"; } markSent(s); };
     li.querySelector('[data-a=done]').onclick=()=>updateDoc(doc(db,"stops",s.id),{done:!s.done, order: s.done? s.order : 1e6+Date.now()%1e6});
     li.querySelector('[data-a=del]').onclick=async()=>{ const b=writeBatch(db); b.delete(doc(db,"stops",s.id)); if(s.token) b.delete(doc(db,"confirm",s.token)); await b.commit(); };
